@@ -19,6 +19,9 @@
 #include "soc_osal.h"
 #include "mqtt_client.h"
 
+osEventFlagsId_t evt_id;   // EVENT id handle
+#define WIFI_GOT_IP 0x00000001ul
+
 #define WIFI_IFNAME_MAX_SIZE             16
 #define WIFI_MAX_SSID_LEN                33
 #define WIFI_SCAN_AP_LIMIT               64
@@ -227,7 +230,7 @@ td_s32 example_sta_function(td_void)
             }
         } else if (g_wifi_state == WIFI_STA_SAMPLE_GET_IP) {
             if (example_check_dhcp_status(netif_p, &wait_count) == 0) {
-                mqtt_client_connect();
+                osEventFlagsSet(evt_id, WIFI_GOT_IP);
                 break;
             }
             wait_count++;
@@ -258,12 +261,15 @@ int sta_sample_init(void *param)
         PRINT("%s::example_sta_function fail.\r\n", WIFI_STA_SAMPLE_LOG);
         return -1;
     }
+    osEventFlagsWait(evt_id, WIFI_GOT_IP, osFlagsWaitAny, osWaitForever);
+    mqtt_client_init();
     return 0;
 }
 
 static void sta_sample_entry(void)
 {
-    mqtt_client_init();
+    evt_id = osEventFlagsNew(NULL); 
+    
     osThreadAttr_t attr;
     attr.name       = "sta_sample_task";
     attr.attr_bits  = 0U;

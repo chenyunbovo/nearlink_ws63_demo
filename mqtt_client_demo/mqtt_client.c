@@ -54,10 +54,19 @@ void mqtt_client_deinit(void)
     MQTTClient_destroy(&client);
 }
 
-
-void mqtt_client_connect(void)
+void mqtt_client_init(void) 
 {
     int rc;
+    MQTTClient_init_options ops;
+    ops.do_openssl_init = 0;
+    MQTTClient_global_init(&ops);
+    rc = MQTTClient_create(&client, ADDRESS, CLIENTID, 0, NULL);
+    if (rc != MQTTCLIENT_SUCCESS) {
+        printf("Failed to create mqtt client, return code %d\n", rc);
+    }
+    // 设置MQTT消息接受回调函数
+    MQTTClient_setCallbacks(client, NULL, NULL, on_message, NULL);
+
     MQTTClient_connectOptions conn_opts = MQTTClient_connectOptions_initializer;
     conn_opts.username = USERNAME;
     conn_opts.password = PASSWORD;
@@ -75,18 +84,4 @@ void mqtt_client_connect(void)
         MQTTClient_subscribe(client, TOPIC, QOS);
         printf("Connected to MQTT Broker!\n");
     }
-} 
-
-void mqtt_client_init(void) 
-{
-    int rc;
-    MQTTClient_init_options ops;
-    ops.do_openssl_init = 0;
-    MQTTClient_global_init(&ops);
-    rc = MQTTClient_create(&client, ADDRESS, CLIENTID, 0, NULL);
-    if (rc != MQTTCLIENT_SUCCESS) {
-        printf("Failed to create mqtt client, return code %d\n", rc);
-    }
-    // 设置MQTT消息接受回调函数
-    MQTTClient_setCallbacks(client, NULL, NULL, on_message, NULL);
 }
