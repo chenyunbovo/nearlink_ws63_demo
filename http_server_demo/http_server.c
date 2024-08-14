@@ -9,7 +9,7 @@
 #include "cmsis_os2.h"
 #include "app_init.h"
 #include "soc_osal.h"
-#include "http_client.h"
+#include "http_server.h"
 
 #ifndef HTTPD_DEBUG
 #define HTTPD_DEBUG         LWIP_DBG_OFF

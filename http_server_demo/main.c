@@ -17,7 +17,7 @@
 #include "cmsis_os2.h"
 #include "app_init.h"
 #include "soc_osal.h"
-#include "http_client.h"
+#include "http_server.h"
 
 osEventFlagsId_t evt_id;   // EVENT id handle
 #define WIFI_GOT_IP 0x00000001ul

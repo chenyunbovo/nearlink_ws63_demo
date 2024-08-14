@@ -6,5 +6,8 @@
 config SAMPLE_SUPPORT_MQTT_CLIENT_SAMPLE
     bool "Support MQTT Client Sample."
 
+config SAMPLE_SUPPORT_HTTP_SERVER_SAMPLE
+    bool "Support HTTP Server Sample."
+
 config SAMPLE_SUPPORT_HTTP_CLIENT_SAMPLE
     bool "Support HTTP Client Sample."

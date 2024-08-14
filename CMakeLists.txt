@@ -6,6 +6,10 @@ if(DEFINED CONFIG_SAMPLE_SUPPORT_MQTT_CLIENT_SAMPLE)
     add_subdirectory_if_exist(mqtt_client_demo)
 endif()
 
+if(DEFINED CONFIG_SAMPLE_SUPPORT_HTTP_SERVER_SAMPLE)
+    add_subdirectory_if_exist(http_server_demo)
+endif()
+
 if(DEFINED CONFIG_SAMPLE_SUPPORT_HTTP_CLIENT_SAMPLE)
     add_subdirectory_if_exist(http_client_demo)
 endif()
