@@ -1,7 +1,7 @@
 #include "lwip/opt.h"
-#include "lwip/arch.h"
-#include "lwip/netifapi.h"
+#include "lwip/sys.h"
 #include "lwip/api.h"
+#include <lwip/sockets.h>
 #include "td_base.h"
 #include "td_type.h"
 #include "stdlib.h"
@@ -11,114 +11,74 @@
 #include "soc_osal.h"
 #include "http_client.h"
 
-#ifndef HTTPD_DEBUG
-#define HTTPD_DEBUG         LWIP_DBG_OFF
-#endif
+int8_t get_buf[] = "GET / HTTP/1.1\r\nHost: www.baidu.com\r\n\r\n";
 
+#define HOST_NAME "www.baidu.com" 
 #define PORT 80
 
-static const char http_html_hdr[] =
-    "HTTP/1.1 200 OK\r\nContent-type: text/html; charset=UTF-8\r\n\r\n";
-static const char http_index_html[] =
-"<html><head><title>Congrats!</title></head>\
-<body><h1 align=\"center\">Hello World!</h1>\
-<h2 align=\"center\">Welcome to Fire lwIP HTTP Server!</h1>\
-<p align=\"center\">This is a small test page, served by httpserver-netconn.</p>\
-<p align=\"center\"><a href=\"http://www.baidu.com/\">访问百度</a>\
-</body></html>";
-
-/** Serve one HTTP connection accepted in the http thread */
-static void  http_server_netconn_serve(struct netconn *conn)
+int http_client_thread(void *param)
 {
-    struct netbuf *inbuf;
-    char *buf;
-    u16_t buflen;
-    err_t err;
-
-    /* 读取数据 */
-    err = netconn_recv(conn, &inbuf);
-
-    if (err == ERR_OK)
-    {
-        netbuf_data(inbuf, (void**)&buf, &buflen);
-
-        /* 判断是不是HTTP的GET命令*/
-        if (buflen>=5 &&
-                buf[0]=='G' &&
-                buf[1]=='E' &&
-                buf[2]=='T' &&
-                buf[3]==' ' &&
-                buf[4]=='/' )
-        {
-
-            /* 发送数据头 */
-            netconn_write(conn, http_html_hdr,
-            sizeof(http_html_hdr)-1, NETCONN_NOCOPY);
-            /* 发送网页数据 */
-            netconn_write(conn, http_index_html,
-                sizeof(http_index_html)-1, NETCONN_NOCOPY);
-        }
-    }
-    netconn_close(conn); /* 关闭连接 */
-
-    /* 释放inbuf */
-    netbuf_delete(inbuf);
-}
-
-/** The main function, never returns! */
-int http_server_netconn_thread(void *param)
-{
-    td_char ifname[17] = "wlan0"; /* 创建的STA接口名 */
-    struct netif *netif_p = TD_NULL;
-    netif_p = netifapi_netif_find(ifname);
-
     UNUSED(param);
-    err_t err;
-    struct netconn *conn, *newconn;
-    const ip_addr_t server_ip = netif_p->ip_addr;
-    printf("http server bind ip: %s;PORT:%d\r\n", ip4addr_ntoa(netif_ip4_addr(netif_p)), PORT);
-    /* 创建netconn连接结构 */
-    /* 绑定端口号与IP地址，端口号默认是80 */
-    conn = netconn_new(NETCONN_TCP);
-    netconn_bind(conn, &server_ip, PORT);
+    int sock = -1,rece;
+    struct sockaddr_in client_addr;
 
-    LWIP_ERROR("http_server: invalid conn", (conn != NULL), return -1;);
-
-    /* 监听 */
-    netconn_listen(conn);
-
-    do
-    {
-        //处理连接请求
-        err = netconn_accept(conn, &newconn);
-        if (err == ERR_OK)
-        {
-            //发送网页数据
-            http_server_netconn_serve(newconn);
-
-            //删除连接结构
-            netconn_delete(newconn);
-        }
+    uint8_t *pbufdata = (uint8_t *)malloc(12000*sizeof(uint8_t));
+    if(pbufdata == NULL) {
+        PRINT("malloc failed\n");
+        return -1;
     }
-    while (err == ERR_OK);
-    //关闭
-    netconn_close(conn);
-    netconn_delete(conn);
+    char* host_ip;
+
+    ip_addr_t dns_ip;
+    u32_t dns_ip_len = 1;
+    netconn_gethostbyname(HOST_NAME, &dns_ip, &dns_ip_len);
+    host_ip = ip_ntoa(&dns_ip);
+    PRINT_DEBUG("host name : %s , host_ip : %s\n",HOST_NAME,host_ip);
+    for (;;) {
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0) {
+            printf("Socket error\n");
+            (void)osDelay(10);
+            continue;
+        }
+        client_addr.sin_family = AF_INET;
+        client_addr.sin_port = htons(PORT);
+        client_addr.sin_addr.s_addr = inet_addr(host_ip);
+        memset(&(client_addr.sin_zero), 0, sizeof(client_addr.sin_zero));
+        if (connect(sock,(struct sockaddr *)&client_addr,sizeof(struct sockaddr)) == -1) {
+            printf("Connect failed!\n");
+            closesocket(sock);
+            (void)osDelay(10);
+            continue;
+        }
+        printf("Connect to server successful!\n");
+        printf("\n***************************************************\n");
+        send(sock,get_buf,sizeof(get_buf),0);
+        while(1) {
+            rece = recv(sock, pbufdata, 12000, 0);
+            if (rece <= 0) {
+                break;
+            }
+            printf("rece:%d\r\n",rece);
+        }
+        printf("\n***************************************************\n");
+        closesocket(sock);
+        (void)osDelay(100000);
+    }
     return 0;
 }
 
-/** Initialize the HTTP server (start its thread) */
-void  http_server_netconn_init(void)
+void  http_client_init(void)
 {
     osThreadAttr_t attr;
-    attr.name       = "http_server_netconn";
+    attr.name       = "http_client";
     attr.attr_bits  = 0U;
     attr.cb_mem     = NULL;
     attr.cb_size    = 0U;
     attr.stack_mem  = NULL;
-    attr.stack_size = 2048;
+    attr.stack_size = 4096;
     attr.priority   = 12;
-    if (osThreadNew((osThreadFunc_t)http_server_netconn_thread, NULL, &attr) == NULL) {
-        PRINT("Create http_server_netconn_thread fail.\r\n");
+    if (osThreadNew((osThreadFunc_t)http_client_thread, NULL, &attr) == NULL) {
+        PRINT("Create http_client_thread fail.\r\n");
     }
 }

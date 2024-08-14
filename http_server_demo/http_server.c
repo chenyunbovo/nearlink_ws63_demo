@@ -27,7 +27,6 @@ static const char http_index_html[] =
 <p align=\"center\"><a href=\"http://www.baidu.com/\">访问百度</a>\
 </body></html>";
 
-/** Serve one HTTP connection accepted in the http thread */
 static void  http_server_netconn_serve(struct netconn *conn)
 {
     struct netbuf *inbuf;
@@ -65,7 +64,6 @@ static void  http_server_netconn_serve(struct netconn *conn)
     netbuf_delete(inbuf);
 }
 
-/** The main function, never returns! */
 int http_server_netconn_thread(void *param)
 {
     td_char ifname[17] = "wlan0"; /* 创建的STA接口名 */
@@ -107,7 +105,6 @@ int http_server_netconn_thread(void *param)
     return 0;
 }
 
-/** Initialize the HTTP server (start its thread) */
 void  http_server_netconn_init(void)
 {
     osThreadAttr_t attr;

@@ -266,7 +266,7 @@ int sta_sample_init(void *param)
         return -1;
     }
     osEventFlagsWait (evt_id, WIFI_GOT_IP, osFlagsWaitAny, osWaitForever); 
-    http_server_netconn_init();
+    http_client_init();
     return 0;
 }
 

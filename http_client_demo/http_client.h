@@ -1,8 +1,8 @@
 #ifndef __HTTP_CLIETN_H__
 #define __HTTP_CLIETN_H__
 
-#define PF_PKT_SUPPORT  0
+#define LWIP_DNS 1
 
-void http_server_netconn_init(void);
+void http_client_init(void);
 
 #endif /* __HTTP_CLIETN_H__ */
