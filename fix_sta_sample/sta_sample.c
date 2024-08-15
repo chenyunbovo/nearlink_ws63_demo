@@ -10,6 +10,7 @@
 #include "lwip/netifapi.h"
 #include "wifi_hotspot.h"
 #include "wifi_hotspot_config.h"
+#include "wifi_device.h"
 #include "td_base.h"
 #include "td_type.h"
 #include "stdlib.h"
@@ -174,6 +175,7 @@ static void wifi_state_event_cb(td_s32 event, td_s32 *param)
             wifi_sta_scan();
             break;
         }
+        PRINT("%s::Find AP, try to connect.\r\n", WIFI_STA_SAMPLE_LOG);
         /* 启动连接 */
         if (wifi_sta_connect(&expected_bss) != 0) {
             PRINT("%s::wifi_sta_connect fail!!\r\n", WIFI_STA_SAMPLE_LOG);
@@ -204,11 +206,7 @@ static void wifi_state_event_cb(td_s32 event, td_s32 *param)
         }
         break;
     case WIFI_STA_SAMPLE_DISCONNECT:
-        wifi_sta_disconnect();
-        /* 尝试重新连接 */
-        if (wifi_sta_connect(&expected_bss) != 0) {
-            PRINT("%s::wifi_sta_connect fail!!\r\n", WIFI_STA_SAMPLE_LOG);
-        }
+        wifi_sta_scan();
         break;
     case WIFI_STA_SAMPLE_GOT_IP:
         PRINT("%s::STA GOT IP success.\r\n", WIFI_STA_SAMPLE_LOG);
@@ -232,7 +230,6 @@ int sta_sample_init(void *param)
         return -1;
     }
     PRINT("%s::wifi_event_cb register succ.\r\n", WIFI_STA_SAMPLE_LOG);
-
     /* 等待wifi初始化完成 */
     while (wifi_is_wifi_inited() == 0) {
         (void)osDelay(10); /* 1: 等待100ms后判断状态 */
@@ -240,8 +237,14 @@ int sta_sample_init(void *param)
     PRINT("%s::wifi init succ.\r\n", WIFI_STA_SAMPLE_LOG);
 
     if (wifi_sta_enable() != 0) {
+        PRINT("%s::wifi_sta_enable fail.\r\n", WIFI_STA_SAMPLE_LOG);
         return -1;
     }
+    if (wifi_sta_set_reconnect_policy(0, 2, 1, 1) != ERRCODE_SUCC) {
+        PRINT("%s::wifi_sta_set_reconnect_policy fail.\r\n", WIFI_STA_SAMPLE_LOG);
+        return -1;
+    }
+
     wifi_state_event_cb(WIFI_STA_SAMPLE_INIT, NULL);
     return 0;
 }
