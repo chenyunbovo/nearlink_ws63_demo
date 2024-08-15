@@ -3,8 +3,11 @@
 # Copyright (c) @CompanyNameMagicTag 2023-2023. All rights reserved.
 #===============================================================================
 
-config SAMPLE_SUPPORT_MQTT_CLIENT_SAMPLE
-    bool "Support MQTT Client Sample."
+config SAMPLE_SUPPORT_MQTT3_CLIENT_SAMPLE
+    bool "Support MQTT3 Client Sample."
+
+config SAMPLE_SUPPORT_MQTT5_CLIENT_SAMPLE
+    bool "Support MQTT5 Client Sample."
 
 config SAMPLE_SUPPORT_HTTP_SERVER_SAMPLE
     bool "Support HTTP Server Sample."
