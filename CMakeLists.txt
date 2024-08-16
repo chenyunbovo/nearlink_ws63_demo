@@ -22,6 +22,9 @@ if(DEFINED CONFIG_SAMPLE_SUPPORT_MQTT5_CLIENT_SAMPLE)
     add_subdirectory_if_exist(mqtt5_client_demo)
 endif()
 
+if(DEFINED CONFIG_SAMPLE_SUPPORT_BLUFI_SAMPLE)
+    add_subdirectory_if_exist(blufi_demo)
+endif()
 
 set(SOURCES "${SOURCES}" PARENT_SCOPE)
 set(PUBLIC_HEADER "${PUBLIC_HEADER}" PARENT_SCOPE)

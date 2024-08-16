@@ -17,3 +17,6 @@ config SAMPLE_SUPPORT_HTTP_CLIENT_SAMPLE
 
 config SAMPLE_SUPPORT_FIX_STA_SAMPLE
     bool "Support FIX STA Sample."
+
+config SAMPLE_SUPPORT_BLUFI_SAMPLE
+    bool "Support blufi Sample."
