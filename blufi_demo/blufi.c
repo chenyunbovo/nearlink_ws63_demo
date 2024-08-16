@@ -10,143 +10,93 @@
 #include "lwip/netifapi.h"
 #include "wifi_hotspot.h"
 #include "wifi_hotspot_config.h"
+#include "wifi_device.h"
 #include "td_base.h"
 #include "td_type.h"
 #include "stdlib.h"
 #include "uart.h"
 #include "cmsis_os2.h"
-#include "soc_osal.h"
 #include "app_init.h"
+#include "soc_osal.h"
+#include "reboot_porting.h"
 
-#include "ble_wifi_cfg_scan.h"
-#include "ble_wifi_cfg_adv.h"
-#include "ble_wifi_cfg_server.h"
-#include "ble_wifi_cfg_client.h"
+#define WIFI_IFNAME_MAX_SIZE             16
+#define WIFI_MAX_SSID_LEN                33
+#define WIFI_SCAN_AP_LIMIT               64
+#define WIFI_MAC_LEN                     6
+#define WIFI_STA_SAMPLE_LOG              "[WIFI_STA_SAMPLE]"
+#define WIFI_NOT_AVALLIABLE              0
+#define WIFI_AVALIABE                    1
+#define WIFI_GET_IP_MAX_COUNT            300
 
-#define WIFI_IFNAME_MAX_SIZE 16
-#define WIFI_MAX_KEY_LEN 65
-#define WIFI_MAX_SSID_LEN 33
-#define WIFI_SCAN_AP_LIMIT 64
-#define WIFI_MAC_LEN 6
-#define WIFI_GET_IP_MAX_TIMES 100
-#define WIFI_MAX_CONFIG_INFO_LEN 64
-#define WIFI_CONFIG_INFO_SSID_LEN 32
-#define WIFI_CONFIG_INFO_KEY_LEN 32
-#define BGLE_WIFI_CFG_LOG "[BGLE_WIFI_DEBUG]"
-#define WIFI_AP_LIST_MAX_NUM 10
-/* 前2字节为上报类型和ap个数 */
-#define WIFI_AP_LIST_PREFIX_LEN 2
+#define WIFI_TASK_PRIO                  (osPriority_t)(13)
+#define WIFI_TASK_DURATION_MS           2000
+#define WIFI_TASK_STACK_SIZE            0x1000
+#define expected_ssid "123"    /* 待连接的网络名称 */
+#define key "12345678"         /* 待连接的网络接入密码 */
+static td_void wifi_scan_state_changed(td_s32 state, td_s32 size);
+static td_void wifi_connection_changed(td_s32 state, const wifi_linked_info_stru *info, td_s32 reason_code);
 
-#define WLAN_REASON_UNSPECIFIED 1
-#define WLAN_REASON_PREV_AUTH_NOT_VALID 2
-#define WLAN_REASON_DEAUTH_LEAVING 3
-#define WLAN_REASON_DISASSOC_DUE_TO_INACTIVITY 4
-#define WLAN_REASON_CLASS2_FRAME_FROM_NONAUTH_STA 6
-#define WLAN_REASON_MICHAEL_MIC_FAILURE 14
-#define WLAN_REASON_4WAY_HANDSHAKE_TIMEOUT 15
-#define WLAN_REASON_GROUP_KEY_UPDATE_TIMEOUT 16
-#define WLAN_DISCONN_BY_AP_BIT 15
-
-#define WLAN_STATUS_CHALLENGE_FAIL 15
-
-#define MAC_JOIN_RSP_TIMEOUT 5200
-#define MAC_AUTH_RSP2_TIMEOUT 5201
-#define MAC_AUTH_RSP4_TIMEOUT 5202
-#define MAC_ASOC_RSP_TIMEOUT 5203
-#define WLAN_DISASOC_MISC_LINKLOSS 5206
-#define WIFI_NETWORK_NOT_FOUND_ERROR 5300
-#define MAC_STATUS_MAX 7000
-
+wifi_event_stru wifi_event_cb = {
+    .wifi_event_connection_changed      = wifi_connection_changed,
+    .wifi_event_scan_state_changed      = wifi_scan_state_changed,
+};
 
 enum {
-    CONFIG_DEMO_INIT = 0,           /* 0:初始态 */
-    CONFIG_DEMO_WIFI_INIT,          /* 1:重新连接设备 待配网 */
-    CONFIG_DEMO_WIFI_SCAN_DOING,    /* 2:扫描中 */
-    CONFIG_DEMO_WIFI_SCAN_DONE,     /* 3:扫描完成 */
-    CONFIG_DEMO_WIFI_CONNECT_DOING, /* 4:WiFi连接中 */
-    CONFIG_DEMO_WIFI_CONNECT_DONE,  /* 5:Wifi连接完成 */
-    CONFIG_DEMO_WIFI_DHCP_DONE,
-} bgwc_state_enum;
+    WIFI_STA_SAMPLE_INIT = 0,       /* 0:初始态 */
+    WIFI_STA_SAMPLE_SCAN_DONE,      /* 1:扫描完成 */
+    WIFI_STA_SAMPLE_CONNECTING,     /* 2:连接中 */
+    WIFI_STA_SAMPLE_CONNECT_DONE,   /* 3:关联成功 */
+    WIFI_STA_SAMPLE_DISCONNECT,     /* 4:断开连接 */
+    WIFI_STA_SAMPLE_GOT_IP,         /* 5:获取IP */
+} wifi_state_enum;
 
-enum {
-    CFG_TYPE_WIFI_STATE = 1, /* WiFi关联状态 */
-    CFG_TYPE_AP_LIST = 2     /* 扫描到的AP列表信息 */
-} bgwc_cfg_type;
+td_char ifname[WIFI_IFNAME_MAX_SIZE + 1] = "wlan0"; /* 创建的STA接口名 */
+wifi_sta_config_stru expected_bss = {0}; /* 连接请求信息 */
+struct netif *netif_p = TD_NULL;
 
-typedef enum {
-    WIFI_ERRCODE_NONE = 0,
-    WIFI_ERRCODE_SSID_NOT_FOUND,
-    WIFI_ERRCODE_PWD_ERROR,
-    WIFI_ERRCODE_DHCP_FAILED,
-    WIFI_ERRCODE_BEACON_LOST,
-    WIFI_ERRCODE_OTHERS
-} bgwc_wifi_errcode;
+static void wifi_state_event_cb(td_s32 event, td_s32 *param);
 
-typedef struct {
-    char ssid[WIFI_MAX_SSID_LEN];
-    int8_t rssi;
-} bgwc_wifi_bss;
-
-td_char g_data[WIFI_MAX_CONFIG_INFO_LEN] = {0};
-static td_u8 g_bgwc_state = CONFIG_DEMO_INIT;
-uint8_t g_wifi_cfg_info_flag = 0; /* 0:no info 1:save info */
-uint8_t g_wifi_list_req_flag = 0; /* 0:recv req 1:no req */
-int8_t g_errcode = WIFI_ERRCODE_NONE;
-
-static int8_t get_wifi_errcode(void)
+/*****************************************************************************
+  STA 扫描事件回调函数
+*****************************************************************************/
+static td_void wifi_scan_state_changed(td_s32 state, td_s32 size)
 {
-    return g_errcode;
+    UNUSED(state);
+    PRINT("%s::Scan done!.\r\n", WIFI_STA_SAMPLE_LOG);
+    wifi_state_event_cb(WIFI_STA_SAMPLE_SCAN_DONE, &size);
+    return;
 }
 
-uint8_t get_wifi_cfg_info_flag(void)
+/*****************************************************************************
+  STA 关联事件回调函数
+*****************************************************************************/
+static td_void wifi_connection_changed(td_s32 state, const wifi_linked_info_stru *info, td_s32 reason_code)
 {
-    return g_wifi_cfg_info_flag;
-}
+    UNUSED(info);
+    UNUSED(reason_code);
 
-void set_wifi_cfg_info_flag(uint8_t flag)
-{
-    g_wifi_cfg_info_flag = flag;
-}
-
-uint8_t get_wifi_list_req_flag(void)
-{
-    return g_wifi_list_req_flag;
-}
-
-void set_wifi_list_req_flag(uint8_t flag)
-{
-    g_wifi_list_req_flag = flag;
-}
-
-void set_wifi_cfg_info(uint8_t *info, uint16_t info_len)
-{
-    set_wifi_cfg_info_flag(1);
-    (void)memcpy_s(g_data, WIFI_MAX_CONFIG_INFO_LEN, info, info_len);
-}
-
-int bgwc_wifi_list_resp_send(uint16_t handle)
-{
-    set_wifi_list_req_flag(1);
-    uint8_t result = 0x01;
-    errcode_t ret = ble_wifi_cfg_server_send_report_by_handle(handle, (const uint8_t *)&result, sizeof(uint8_t));
-    if (ret != ERRCODE_BT_SUCCESS) {
-        PRINT("bgwc_wifi_list_resp_send fail, ret:%x.\n", ret);
+    if (state == WIFI_NOT_AVALLIABLE) {
+        PRINT("%s::Connect fail!. try agin !\r\n", WIFI_STA_SAMPLE_LOG);
+        wifi_state_event_cb(WIFI_STA_SAMPLE_DISCONNECT, NULL);
+    } else {
+        PRINT("%s::Connect succ!.\r\n", WIFI_STA_SAMPLE_LOG);
+        wifi_state_event_cb(WIFI_STA_SAMPLE_CONNECT_DONE, NULL);
     }
-    return ret;
 }
 
-td_s32 example_get_match_network(wifi_sta_config_stru *expected_bss)
+/*****************************************************************************
+  STA 匹配目标AP
+*****************************************************************************/
+td_s32 example_get_match_network(wifi_sta_config_stru *expected_bss, td_u32 num)
 {
-    td_s32 ret;
-    td_u32 num = 64; /* 最大扫描到网络数量64 */
-    td_char expected_ssid[WIFI_CONFIG_INFO_SSID_LEN] = {0};
-    td_char key[WIFI_CONFIG_INFO_KEY_LEN] = {0}; /* 待连接的网络接入密码 */
+    td_s32  ret;
     td_bool find_ap = TD_FALSE;
-    td_u8 bss_index;
+    td_u8   bss_index;
     /* 获取扫描结果 */
     td_u32 scan_len = sizeof(wifi_scan_info_stru) * WIFI_SCAN_AP_LIMIT;
     wifi_scan_info_stru *result = osal_kmalloc(scan_len, OSAL_GFP_ATOMIC);
-    if (result == NULL) {
+    if (result == TD_NULL) {
         return -1;
     }
     memset_s(result, scan_len, 0, scan_len);
@@ -155,14 +105,8 @@ td_s32 example_get_match_network(wifi_sta_config_stru *expected_bss)
         osal_kfree(result);
         return -1;
     }
-
-    memcpy_s(expected_ssid, WIFI_CONFIG_INFO_SSID_LEN, g_data, WIFI_CONFIG_INFO_SSID_LEN);
-    memcpy_s(key, WIFI_CONFIG_INFO_SSID_LEN, g_data + WIFI_CONFIG_INFO_SSID_LEN, WIFI_CONFIG_INFO_KEY_LEN);
-
-    PRINT("%s expected_ssid :%s, key:%s\r\n", BGLE_WIFI_CFG_LOG, expected_ssid, key);
-
     /* 筛选扫描到的Wi-Fi网络，选择待连接的网络 */
-    for (bss_index = 0; bss_index < num; bss_index++) {
+    for (bss_index = 0; bss_index < num; bss_index ++) {
         if (strlen(expected_ssid) == strlen(result[bss_index].ssid)) {
             if (memcmp(expected_ssid, result[bss_index].ssid, strlen(expected_ssid)) == 0) {
                 find_ap = TD_TRUE;
@@ -189,308 +133,140 @@ td_s32 example_get_match_network(wifi_sta_config_stru *expected_bss)
         osal_kfree(result);
         return -1;
     }
-    expected_bss->ip_type = 1;
+    expected_bss->ip_type = 1; /* 1：IP类型为动态DHCP获取 */
     osal_kfree(result);
     return 0;
 }
 
-td_bool example_check_connect_status(td_void)
+/*****************************************************************************
+  STA DHCP状态查询
+*****************************************************************************/
+int example_check_dhcp_status(void *param)
 {
-    td_u8 index;
-    wifi_linked_info_stru wifi_status;
-    /* 获取网络连接状态，共查询5次 */
-    for (index = 0; index < 5; index++) {
-        (td_void)osDelay(50); /* 每次间隔50 tick */
-        memset_s(&wifi_status, sizeof(wifi_linked_info_stru), 0, sizeof(wifi_linked_info_stru));
-        if (wifi_sta_get_ap_info(&wifi_status) != 0) {
-            continue;
-        }
-        if (wifi_status.conn_state == 1) {
-            return 0; /* 连接成功退出循环 */
-        }
-    }
-    return -1;
-}
-
-static td_void bgwc_get_ap_list_info(wifi_scan_info_stru *scan_ret, uint32_t real_ap_number, uint8_t *report_data)
-{
-    bgwc_wifi_bss bss = { 0 };
-    uint8_t *bss_data = NULL;
-    uint32_t count = 0;
-
-    report_data[0] = CFG_TYPE_AP_LIST;
-    bss_data = report_data + WIFI_AP_LIST_PREFIX_LEN;
-    for (uint32_t idx = 0; idx < real_ap_number; idx++) {
-        if (strlen(scan_ret[idx].ssid) == 0) {
-            continue;
-        }
-        if (memcpy_s(bss.ssid, sizeof(bss.ssid), scan_ret[idx].ssid, sizeof(scan_ret[idx].ssid) - 1) != EOK) {
-            return;
-        }
-        bss.rssi = (int8_t)scan_ret[idx].rssi;
-        if (memcpy_s(bss_data, sizeof(bgwc_wifi_bss), &bss, sizeof(bss)) != EOK) {
-            return;
-        }
-        PRINT("%d:ssid[%s]\trssi[%d] \t\r\n", count, bss.ssid, bss.rssi);
-        bss_data += sizeof(bgwc_wifi_bss);
-        count++;
-        /* report max num: 10 */
-        if (count >= WIFI_AP_LIST_MAX_NUM) {
+    UNUSED(param);
+    static td_u8 wait_count = 0;
+    while (1) {
+        if ((ip_addr_isany(&(netif_p->ip_addr)) == 0) && (wait_count <= WIFI_GET_IP_MAX_COUNT)) {
+            /* DHCP成功 */
+            PRINT("%s::STA DHCP success.\r\n", WIFI_STA_SAMPLE_LOG);
+            wifi_state_event_cb(WIFI_STA_SAMPLE_GOT_IP, NULL);
             break;
         }
-    }
-    report_data[1] = (uint8_t)count;
-}
-
-static td_void bgwc_scan_state_changed(td_s32 state, td_s32 size)
-{
-    wifi_scan_info_stru *scan_ret = NULL;
-    uint32_t real_ap_number = (uint32_t)size;
-    uint8_t *report_data = NULL;
-    uint32_t max_len;
-    PRINT("%s bgwc_scan_state_changed enter.\n", BGLE_WIFI_CFG_LOG);
-    UNUSED(state);
-
-    g_bgwc_state = CONFIG_DEMO_WIFI_SCAN_DONE;
-    if ((get_wifi_list_req_flag() == 0) || (size <= 0)) {
-        return;
-    }
-
-    scan_ret = (wifi_scan_info_stru *)malloc(sizeof(wifi_scan_info_stru) * real_ap_number);
-    if (scan_ret == NULL) {
-        return;
-    }
-    memset_s(scan_ret, sizeof(wifi_scan_info_stru) * real_ap_number, 0, sizeof(wifi_scan_info_stru) * real_ap_number);
-    if (wifi_sta_get_scan_info(scan_ret, &real_ap_number) != ERRCODE_SUCC) {
-        free(scan_ret);
-        return;
-    }
-
-    max_len = sizeof(bgwc_wifi_bss) * WIFI_AP_LIST_MAX_NUM + WIFI_AP_LIST_PREFIX_LEN;
-    report_data = (uint8_t *)malloc(max_len);
-    if (report_data == NULL) {
-        free(scan_ret);
-        return;
-    }
-    memset_s(report_data, max_len, 0, max_len);
-    bgwc_get_ap_list_info(scan_ret, real_ap_number, report_data);
-    ble_wifi_cfg_server_send_report_by_uuid((const uint8_t *)report_data,
-        sizeof(bgwc_wifi_bss) * report_data[1] + WIFI_AP_LIST_PREFIX_LEN); /* 真实写入数据的长度 */
-    /* 恢复初始值 */
-    set_wifi_list_req_flag(0);
-    free(scan_ret);
-    free(report_data);
-    return;
-}
-
-static void bgwc_wifi_reason_code(td_s32 reason_code, int8_t *err_code)
-{
-    int disconn_by_ap = (reason_code >> WLAN_DISCONN_BY_AP_BIT) & 1;
-
-    reason_code = reason_code & ~(1 << WLAN_DISCONN_BY_AP_BIT);
-    /* 密码错误由对端AP校验并返回错误码 */
-    if (disconn_by_ap == 1) {
-        switch (reason_code) {
-            case 0:
-                *err_code = WIFI_ERRCODE_NONE;
-                break;
-            case WLAN_REASON_PREV_AUTH_NOT_VALID:
-            case WLAN_REASON_MICHAEL_MIC_FAILURE:
-            case WLAN_REASON_4WAY_HANDSHAKE_TIMEOUT:
-            case WLAN_REASON_GROUP_KEY_UPDATE_TIMEOUT:
-                *err_code = WIFI_ERRCODE_PWD_ERROR;
-                break;
-            default:
-                *err_code = WIFI_ERRCODE_OTHERS;
-                break;
+        if (wait_count > WIFI_GET_IP_MAX_COUNT) {
+            PRINT("%s::STA DHCP timeout, try again !.\r\n", WIFI_STA_SAMPLE_LOG);
+            wifi_state_event_cb(WIFI_STA_SAMPLE_DISCONNECT, NULL);
+            return -1;
         }
-        return;
-    }
-    /* 自身主动断开场景, 错误码转换 */
-    if (reason_code >= MAC_STATUS_MAX) {
-        reason_code -= MAC_STATUS_MAX;
-    }
-
-    if (reason_code == WLAN_DISASOC_MISC_LINKLOSS) {
-        *err_code = WIFI_ERRCODE_BEACON_LOST;
-        return;
-    } else if (reason_code == WIFI_NETWORK_NOT_FOUND_ERROR) {
-        *err_code = WIFI_ERRCODE_SSID_NOT_FOUND;
-        return;
-    }
-    switch (reason_code) {
-        case WLAN_STATUS_CHALLENGE_FAIL:
-            *err_code = WIFI_ERRCODE_PWD_ERROR;
-            break;
-        default:
-            *err_code = WIFI_ERRCODE_OTHERS;
-            break;
-    }
-    return;
-}
-
-static td_void bgwc_connection_changed(td_s32 state, const wifi_linked_info_stru *info, td_s32 reason_code)
-{
-    UNUSED(state);
-    PRINT("%s bgwc_connection_changed enter.\n", BGLE_WIFI_CFG_LOG);
-
-    g_errcode = WIFI_ERRCODE_NONE;
-    if (info->conn_state == WIFI_DISCONNECTED) {
-        bgwc_wifi_reason_code(reason_code, &g_errcode);
-    }
-    g_bgwc_state = CONFIG_DEMO_WIFI_CONNECT_DONE;
-    return;
-}
-
-static td_void bgwc_softap_state_changed(td_s32 state)
-{
-    UNUSED(state);
-    PRINT("%s bgwc_softap_state_changed enter.\n", BGLE_WIFI_CFG_LOG);
-    return;
-}
-
-wifi_event_stru ble_wifi_cfg_event_cb = {
-    .wifi_event_scan_state_changed = bgwc_scan_state_changed,
-    .wifi_event_connection_changed = bgwc_connection_changed,
-    .wifi_event_softap_state_changed = bgwc_softap_state_changed
-};
-
-int bgwc_wifi_connect(void)
-{
-    wifi_sta_config_stru expected_bss = { 0 }; /* 连接请求信息 */
-    /* 获取待连接的网络 */
-    if (example_get_match_network(&expected_bss) != 0) {
-        PRINT("Do not find AP, try again !\r\n");
-        g_errcode = WIFI_ERRCODE_SSID_NOT_FOUND;
-        return -1;
-    }
-
-    /* 启动连接 */
-    if (wifi_sta_connect(&expected_bss) != 0) {
-        PRINT("STA connect fail.\r\n");
-        g_errcode = WIFI_ERRCODE_OTHERS;
-        return -1;
+        (void)osDelay(10);
+        wait_count ++;
     }
     return 0;
 }
 
-static void bgwc_ble_start(void)
+static void wifi_state_event_cb(td_s32 event, td_s32 *param)
 {
-    errcode_t ret = ERRCODE_SUCC;
-    /* 调用BLE起广播接口与注册回调接口 */
-    ret |= ble_wifi_cfg_server_init();
-    PRINT("%s Ble Init State:%d.\r\n", BGLE_WIFI_CFG_LOG, ret);
-    ret |= ble_wifi_cfg_start_adv();
-    
-    PRINT("%s Ble Adv State:%d.\r\n", BGLE_WIFI_CFG_LOG, ret);
+    switch (event) {
+    case WIFI_STA_SAMPLE_INIT:
+        wifi_sta_scan();
+        break;
+    case WIFI_STA_SAMPLE_SCAN_DONE:
+        if (example_get_match_network(&expected_bss, param[0]) != 0) {
+            PRINT("%s::Do not find AP, try again !\r\n", WIFI_STA_SAMPLE_LOG);
+            wifi_sta_scan_result_clear();
+            wifi_sta_scan();
+            break;
+        }
+        PRINT("%s::Find AP, try to connect.\r\n", WIFI_STA_SAMPLE_LOG);
+        /* 启动连接 */
+        if (wifi_sta_connect(&expected_bss) != 0) {
+            PRINT("%s::wifi_sta_connect fail!!\r\n", WIFI_STA_SAMPLE_LOG);
+            wifi_state_event_cb(WIFI_STA_SAMPLE_DISCONNECT, NULL);
+        }
+        break;  
+    case WIFI_STA_SAMPLE_CONNECTING:
+        break;
+    case WIFI_STA_SAMPLE_CONNECT_DONE:
+        PRINT("%s::DHCP start.\r\n", WIFI_STA_SAMPLE_LOG);
+        netif_p = netifapi_netif_find(ifname);
+        if (netif_p == TD_NULL || netifapi_dhcp_start(netif_p) != 0) {
+            PRINT("%s::find netif or start DHCP fail, try again !\r\n", WIFI_STA_SAMPLE_LOG);
+            wifi_state_event_cb(WIFI_STA_SAMPLE_DISCONNECT, NULL);
+        }
+        osThreadAttr_t attr;
+        attr.name       = "example_check_dhcp_status";
+        attr.attr_bits  = 0U;
+        attr.cb_mem     = NULL;
+        attr.cb_size    = 0U;
+        attr.stack_mem  = NULL;
+        attr.stack_size = WIFI_TASK_STACK_SIZE;
+        attr.priority   = WIFI_TASK_PRIO;
+        if (osThreadNew((osThreadFunc_t)example_check_dhcp_status, NULL, &attr) == NULL) {
+            PRINT("%s::Create example_check_dhcp_status fail.\r\n", WIFI_STA_SAMPLE_LOG);
+        } else {
+            PRINT("%s::Create example_check_dhcp_status succ.\r\n", WIFI_STA_SAMPLE_LOG);
+        }
+        break;
+    case WIFI_STA_SAMPLE_DISCONNECT:
+        wifi_sta_scan();
+        break;
+    case WIFI_STA_SAMPLE_GOT_IP:
+        PRINT("%s::STA GOT IP success.\r\n", WIFI_STA_SAMPLE_LOG);
+        PRINT("%s::IP ADDR:%s\r\n", WIFI_STA_SAMPLE_LOG, ip4addr_ntoa(netif_ip4_addr(netif_p)));
+        PRINT("%s::NETMASK:%s\r\n", WIFI_STA_SAMPLE_LOG, ip4addr_ntoa(netif_ip4_netmask(netif_p)));
+        PRINT("%s::GATEWAY:%s\r\n", WIFI_STA_SAMPLE_LOG, ip4addr_ntoa(netif_ip4_gw(netif_p)));
+        break;
+    default:
+        PRINT("%s::Invalid event id:%d.\r\n", WIFI_STA_SAMPLE_LOG, event);
+        break;
+    }
 }
 
-static int bgwc_wifi_start(void)
+int sta_sample_init(void *param)
 {
-    g_bgwc_state = CONFIG_DEMO_WIFI_INIT;
+    param = param;
+
+    /* 注册事件回调 */
+    if (wifi_register_event_cb(&wifi_event_cb) != 0) {
+        PRINT("%s::wifi_event_cb register fail.\r\n", WIFI_STA_SAMPLE_LOG);
+        return -1;
+    }
+    PRINT("%s::wifi_event_cb register succ.\r\n", WIFI_STA_SAMPLE_LOG);
+    /* 等待wifi初始化完成 */
+    while (wifi_is_wifi_inited() == 0) {
+        (void)osDelay(10); /* 1: 等待100ms后判断状态 */
+    }
+    PRINT("%s::wifi init succ.\r\n", WIFI_STA_SAMPLE_LOG);
 
     if (wifi_sta_enable() != 0) {
-        PRINT("%s sta enbale fail !\r\n", BGLE_WIFI_CFG_LOG);
+        PRINT("%s::wifi_sta_enable fail.\r\n", WIFI_STA_SAMPLE_LOG);
         return -1;
     }
-
-    if (wifi_register_event_cb(&ble_wifi_cfg_event_cb) != 0) {
-        PRINT("%s wifi_register_event_cb fail.\r\n", BGLE_WIFI_CFG_LOG);
+    if (wifi_sta_set_reconnect_policy(0, 2, 1, 1) != ERRCODE_SUCC) {
+        PRINT("%s::wifi_sta_set_reconnect_policy fail.\r\n", WIFI_STA_SAMPLE_LOG);
         return -1;
     }
+    osDelay(1000);
+    reboot_port_reboot_chip();
+    wifi_state_event_cb(WIFI_STA_SAMPLE_INIT, NULL);
     return 0;
 }
 
-static void *ble_wifi_cfg_example_task(const char *arg)
+static void sta_sample_entry(void)
 {
-    td_char ifname[WIFI_IFNAME_MAX_SIZE + 1] = "wlan0"; /* 创建的STA接口名 */
-    struct netif *netif_p = NULL;
-    uint8_t result[WIFI_AP_LIST_PREFIX_LEN] = {CFG_TYPE_WIFI_STATE, 0};
-    UNUSED(arg);
-    (td_void)osDelay(200); /* 初始化等待200 tick */
-
-    bgwc_ble_start();
-    bgwc_wifi_start();
-
-    while (1) {
-        (td_void)osDelay(10); /* 等待10 tick */
-        /* 兼容主动和被动配网方案 */
-        if (get_wifi_cfg_info_flag() || get_wifi_list_req_flag()) {
-            PRINT("wifi cfg flag:%d, wifi list flag:%d.\n", get_wifi_cfg_info_flag(), get_wifi_list_req_flag());
-            /* 启动STA扫描 */
-            if (wifi_sta_scan() != 0) {
-                printf("wifi_sta_scan fail.\n");
-                g_bgwc_state = CONFIG_DEMO_WIFI_INIT;
-            } else {
-                break;
-            }
-        }
+    osThreadAttr_t attr;
+    attr.name       = "sta_sample_task";
+    attr.attr_bits  = 0U;
+    attr.cb_mem     = NULL;
+    attr.cb_size    = 0U;
+    attr.stack_mem  = NULL;
+    attr.stack_size = WIFI_TASK_STACK_SIZE;
+    attr.priority   = WIFI_TASK_PRIO;
+    if (osThreadNew((osThreadFunc_t)sta_sample_init, NULL, &attr) == NULL) {
+        PRINT("%s::Create sta_sample_task fail.\r\n", WIFI_STA_SAMPLE_LOG);
+    } else {
+        PRINT("%s::Create sta_sample_task succ.\r\n", WIFI_STA_SAMPLE_LOG);
     }
-
-    while (1) {
-        (td_void)osDelay(10); /* 等待10 tick */
-        /* 检测是否下发配置信息 */
-        if (get_wifi_cfg_info_flag() && (g_bgwc_state == CONFIG_DEMO_WIFI_SCAN_DONE)) {
-            if (bgwc_wifi_connect() == 0) {
-                g_bgwc_state = CONFIG_DEMO_WIFI_CONNECT_DOING;
-            } else {
-                printf("bgwc_wifi_connect fail.\n");
-                g_bgwc_state = CONFIG_DEMO_WIFI_INIT;
-                break;
-            }
-        }
-        /* 完成WiFi连接 尝试DHCP */
-        if (g_bgwc_state == CONFIG_DEMO_WIFI_CONNECT_DONE) {
-            break;
-        }
-    }
-    result[1] = get_wifi_errcode();
-    if (result[1] != WIFI_ERRCODE_NONE) {
-        PRINT("STA ASSOC Fail.\r\n");
-        goto EXIT;
-    }
-    result[1] = WIFI_ERRCODE_DHCP_FAILED;
-    PRINT("STA DHCP start.\r\n");
-    /* DHCP获取IP地址 */
-    netif_p = netifapi_netif_find(ifname);
-    if (netif_p == NULL) {
-        PRINT("not find %s.\r\n", ifname);
-        goto EXIT;
-    }
-    if (netifapi_dhcp_start(netif_p) != 0) {
-        PRINT("STA DHCP Fail.\r\n");
-        goto EXIT;
-    }
-
-    for (td_char i = 0; i < WIFI_GET_IP_MAX_TIMES; i++) {
-        (td_void)osDelay(10); /* 等待10 tick */
-        if (ip_addr_isany(&(netif_p->ip_addr)) == 0) {
-            PRINT("STA DHCP Succ.\r\n");
-            result[1] = WIFI_ERRCODE_NONE;
-            break;
-        }
-    }
-EXIT:
-    PRINT("result code:%d.\r\n", result[1]);
-    ble_wifi_cfg_server_send_report_by_uuid((const uint8_t *)result, sizeof(result));
-    return NULL;
 }
 
-#define BGWC_TASK_PRIO (osPriority_t)(13)
-#define BGWC_TASK_STACK_SIZE 0x1000
-
-static void bgle_wifi_cfg_entry(void)
-{
-    osal_kthread_lock();
-    osal_task *g_wifi_cfg_task = osal_kthread_create((osal_kthread_handler)ble_wifi_cfg_example_task, 0,
-        "bgle_wifi_cfg_task", BGWC_TASK_STACK_SIZE);
-    if (g_wifi_cfg_task != NULL) {
-        osal_kthread_set_priority(g_wifi_cfg_task, BGWC_TASK_PRIO);
-        osal_kfree(g_wifi_cfg_task);
-    }
-    osal_kthread_unlock();
-    reboot_port_reboot_chip();
-}
-
-/* Run the ble_wifi_cfg_entry. */
-app_run(bgle_wifi_cfg_entry);
+/* Run the sta_sample_task. */
+app_run(sta_sample_entry);
