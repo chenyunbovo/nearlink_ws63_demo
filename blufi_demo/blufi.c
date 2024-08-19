@@ -204,7 +204,7 @@ static void blufi_receive_write_req_cbk(uint8_t server_id, uint16_t conn_id, gat
     osal_printk("%s blufi write cbk len:%d, data:%s\n",
                 BLUFI_STA_SAMPLE_LOG, write_cb_para->length, write_cb_para->value);
     if ((write_cb_para->length > 0) && write_cb_para->value) {
-
+        
     }
 }
 
@@ -284,7 +284,7 @@ static errcode_t blufi_server_register_callbacks(void)
 int blufi_init(void *param)
 {
     param = param;
-     (void)osal_msleep(5000); /* 延时5s，等待SLE初始化完毕 */
+    //  (void)osal_msleep(5000); /* 延时5s，等待SLE初始化完毕 */
 
     blufi_server_register_callbacks();
     enable_ble();

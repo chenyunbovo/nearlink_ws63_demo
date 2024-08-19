@@ -16,7 +16,7 @@
 /* Ble Adv appearance type */
 #define BLE_ADV_APPEARANCE_DATA_TYPE 0x19
 /* Blufi appearance type */
-#define BLE_ADV_CATEGORY_UART_VALUE 0x0080
+#define BLE_ADV_CATEGORY_UART_VALUE GAP_BLE_APPEARANCE_TYPE_UNKNOWN
 /* Blufi categorylength */
 #define BLE_ADV_CATEGORY_LEN 2
 /* Ble name adv param type length */
@@ -28,7 +28,7 @@
 /* Ble name adv tx power response type */
 #define BLE_SCAN_RSP_TX_POWER_LEVEL_LEN 0x03
 /* Ble adv flag data */
-#define BLE_ADV_FLAG_DATA 0x05
+#define BLE_ADV_FLAG_DATA GAP_BLE_EVT_SCANNABLE_DIRECTED
 
 /* Ble adv min interval */
 #define BLE_ADV_MIN_INTERVAL 0x30
@@ -44,21 +44,6 @@
 #define ADV_APPEA_CATOGORY_HIGH 8
 
 #define blufi_ADV_LOG "[ble adv]"
-
-typedef enum ble_adv_filter_policy {
-    BLE_ADV_FILTER_POLICY_SCAN_ANY_CONNECT_ANY =                     0x00,
-    BLE_ADV_FILTER_POLICY_SCAN_WHITE_LIST_CONNECT_ANY =              0x01,
-    BLE_ADV_FILTER_POLICY_SCAN_ANY_CONNECT_WHITE_LIST =              0x02,
-    BLE_ADV_FILTER_POLICY_SCAN_WHITE_LIST_CONNECT_WHITE_LIST =       0x03
-} ble_adv_filter_policy_t;
-
-typedef enum ble_adverting_type {
-    BLE_ADV_TYPE_CONNECTABLE_UNDIRECTED =                            0x00,
-    BLE_ADV_TYPE_CONNECTABLE_HIGH_DUTY_CYCLE_DIRECTED =              0x01,
-    BLE_ADV_TYPE_SCANNABLE_UNDIRECTED =                              0x02,
-    BLE_ADV_TYPE_NON_CONNECTABLE_UNDIRECTED =                        0x03,
-    BLE_ADV_TYPE_CONNECTABLE_LOW_DUTY_CYCLE_DIRECTED =               0x04
-} ble_adverting_type_t;
 
 typedef enum ble_adv_channel_map {
     BLE_ADV_CHANNEL_MAP_CH_37 =                      0x01,
@@ -194,18 +179,6 @@ static uint16_t ble_set_scan_response_data(uint8_t *scan_rsp_data, uint8_t scan_
     }
 
     idx += BLE_SCAN_RSP_TX_POWER_LEVEL_LEN;
-
-    /* set local name */
-    scan_rsp_data[idx++] = sizeof(g_uart_local_name) + BLE_GENERAL_BYTE_1;
-    scan_rsp_data[idx++] = BLE_ADV_LOCAL_NAME_DATA_TYPE;
-    if ((idx + sizeof(g_uart_local_name)) > scan_rsp_data_max_len) {
-        return 0;
-    }
-    if (memcpy_s(&scan_rsp_data[idx], scan_rsp_data_max_len - idx, g_uart_local_name,
-                 sizeof(g_uart_local_name)) != EOK) {
-        return 0;
-    }
-    idx += sizeof(g_uart_local_name);
     return idx;
 }
 
@@ -247,8 +220,8 @@ uint8_t blufi_start_adv(void)
         .peer_addr.type = BLE_PUBLIC_DEVICE_ADDRESS,
         /* 广播通道选择bitMap, 可参考BleAdvChannelMap */
         .channel_map = BLE_ADV_CHANNEL_MAP_CH_DEFAULT,
-        .adv_type = BLE_ADV_TYPE_CONNECTABLE_UNDIRECTED,
-        .adv_filter_policy = BLE_ADV_FILTER_POLICY_SCAN_ANY_CONNECT_ANY
+        .adv_type = GAP_BLE_ADV_CONN_SCAN_UNDIR,
+        .adv_filter_policy = GAP_BLE_ADV_FILTER_ALLOW_SCAN_ANY_CON_ANY
     };
 
     (void)memset_s(&adv_para.peer_addr.addr, BD_ADDR_LEN, 0, BD_ADDR_LEN);
