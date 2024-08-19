@@ -33,7 +33,7 @@
 
 
 /* uart gatt server id */
-#define blufi_SERVER_ID 			1
+#define BLUFI_SERVER_ID 			1
 /* uart ble connect id */
 #define BLE_SINGLE_LINK_CONNECT_ID 	1
 /* octets of 16 bits uart */
@@ -43,7 +43,7 @@
 /* invalid server ID */
 #define INVALID_SERVER_ID 			0
 
-#define blufi_SERVICE_NUM 3
+#define BLUFI_SERVICE_NUM 3
 
 static uint16_t g_blufi_conn_id;
 static uint8_t g_blufi_name_value[] = { 'b', 'l', 'e', '_', 'u', 'a', 'r', 't', '\0' };
@@ -51,8 +51,29 @@ static uint8_t g_uart_server_app_uuid[] = { 0x00, 0x00 };
 static uint8_t g_blufi_server_addr[] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 };
 static uint8_t g_server_id = INVALID_SERVER_ID;
 static uint8_t g_connection_state = 0;
-static uint16_t g_notify_indicate_handle = 0;
+static uint16_t g_notify_indicate_handle = 16;
 static uint8_t g_service_num = 0;
+static uint8_t notifycation = 0;
+
+/* device向host发送数据：input report */
+errcode_t ble_uart_server_send_input_report(uint8_t *data, uint16_t len)
+{
+    if (notifycation == 0) {
+        return ERRCODE_BT_FAIL;
+    }
+    gatts_ntf_ind_t param = { 0 };
+    uint16_t conn_id = g_blufi_conn_id;
+    param.attr_handle = g_notify_indicate_handle;
+    param.value_len = len;
+    param.value = data;
+    gatts_notify_indicate(BLUFI_SERVER_ID, conn_id, &param);
+    return ERRCODE_BT_SUCCESS;
+}
+
+uint8_t ble_uart_get_connection_state(void)
+{
+    return g_connection_state;
+}
 
 /* 将uint16的uuid数字转化为bt_uuid_t */
 static void bts_data_to_uuid_len2(uint16_t uuid_data, bt_uuid_t *out_uuid)
@@ -76,7 +97,7 @@ static void blufi_add_service(void)
 {
     bt_uuid_t uart_service_uuid = { 0 };
     bts_data_to_uuid_len2(BLUFI_UUID_SERVER_SERVICE, &uart_service_uuid);
-    gatts_add_service(blufi_SERVER_ID, &uart_service_uuid, true);
+    gatts_add_service(BLUFI_SERVER_ID, &uart_service_uuid, true);
 }
 
 /* 添加uart发送服务的所有特征和描述符 */
@@ -155,39 +176,35 @@ static void blufi_server_service_add_cbk(uint8_t server_id, bt_uuid_t *uuid, uin
 static void blufi_server_characteristic_add_cbk(uint8_t server_id, bt_uuid_t *uuid, uint16_t service_handle,
                                                    gatts_add_character_result_t *result, errcode_t status)
 {
+    UNUSED(status);
     osal_printk("%s add character cbk service:%d service_hdl: %d char_hdl: %d char_val_hdl: %d uuid_len: %d \n",
                 BLUFI_STA_SAMPLE_LOG, server_id, service_handle, result->handle, result->value_handle, uuid->uuid_len);
     osal_printk("uuid:");
     for (int8_t i = 0; i < uuid->uuid_len; i++) {
         osal_printk("%02x ", uuid->uuid[i]);
     }
-    bt_uuid_t characters_cbk_uuid = { 0 };
-    bts_data_to_uuid_len2(BLUFI_CHARACTERISTIC_UUID_TX, &characters_cbk_uuid);
-    characters_cbk_uuid.uuid_len = uuid->uuid_len;
-    if (bts_uart_compare_uuid(uuid, &characters_cbk_uuid)) {
-        g_notify_indicate_handle = result->value_handle;
-    }
-    osal_printk("%s status:%d indicate_handle:%d\n", BLUFI_STA_SAMPLE_LOG, status, g_notify_indicate_handle);
+    osal_printk("\n");
 }
 
 /* 描述符添加回调 */
 static void blufi_server_descriptor_add_cbk(uint8_t server_id, bt_uuid_t *uuid, uint16_t service_handle,
                                                uint16_t handle, errcode_t status)
 {
+    UNUSED(status);
     osal_printk("%s service:%d service_hdl: %d desc_hdl: %d uuid_len: %d \n",
                 BLUFI_STA_SAMPLE_LOG, server_id, service_handle, handle, uuid->uuid_len);
     osal_printk("uuid:");
     for (int8_t i = 0; i < uuid->uuid_len; i++) {
         osal_printk("%02x ", (uint8_t)uuid->uuid[i]);
     }
-    osal_printk("%s status:%d\n", BLUFI_STA_SAMPLE_LOG, status);
+    osal_printk("\n");
 }
 
 /* 开始服务回调 */
 static void blufi_server_service_start_cbk(uint8_t server_id, uint16_t handle, errcode_t status)
 {
     g_service_num++;
-    if ((g_service_num == blufi_SERVICE_NUM) && (status == 0)) {
+    if ((g_service_num == BLUFI_SERVICE_NUM) && (status == 0)) {
         osal_printk("%s start service cbk , start adv\n", BLUFI_STA_SAMPLE_LOG);
         blufi_set_adv_data();
         blufi_start_adv();
@@ -196,15 +213,29 @@ static void blufi_server_service_start_cbk(uint8_t server_id, uint16_t handle, e
                 BLUFI_STA_SAMPLE_LOG, server_id, handle, status);
 }
 
-static void blufi_receive_write_req_cbk(uint8_t server_id, uint16_t conn_id, gatts_req_write_cb_t *write_cb_para,
-                                           errcode_t status)
+static void blufi_receive_write_req_cbk(uint8_t server_id, uint16_t conn_id, gatts_req_write_cb_t *write_cb_para, errcode_t status)
 {
-    osal_printk("%s blufi write cbk server_id:%d, conn_id:%d, status%d\n",
-        BLUFI_STA_SAMPLE_LOG, server_id, conn_id, status);
-    osal_printk("%s blufi write cbk len:%d, data:%s\n",
-                BLUFI_STA_SAMPLE_LOG, write_cb_para->length, write_cb_para->value);
+    osal_printk("%s blufi write cbk server_id:%d, conn_id:%d, status:%d\n", BLUFI_STA_SAMPLE_LOG, server_id, conn_id, status);
+    osal_printk("%s blufi write cbk att_handle:%d\n", BLUFI_STA_SAMPLE_LOG, write_cb_para->handle);
     if ((write_cb_para->length > 0) && write_cb_para->value) {
-        
+        switch (write_cb_para->handle) {
+        case NOTIFY_HANDLE:
+            if (write_cb_para->value[0] == 0x01) {
+                notifycation = 1;
+            } else {
+                notifycation = 0;
+            }
+            break;
+        case WRITE_HANDLE:
+            printf("recv data:");
+            for (int i = 0; i < write_cb_para->length; i++) {
+                printf("%02X ", write_cb_para->value[i]);
+            }
+            printf("\n");
+            break;
+        default:
+            break;
+        }
     }
 }
 

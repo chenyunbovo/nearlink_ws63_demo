@@ -16,6 +16,9 @@ typedef enum {
     BLE_RANDOM_STATIC_IDENTITY_ADDRESS
 } ble_address_t;
 
+#define NOTIFY_HANDLE 17
+#define WRITE_HANDLE 19
+
 uint8_t blufi_set_adv_data(void);
 uint8_t blufi_start_adv(void);
 
