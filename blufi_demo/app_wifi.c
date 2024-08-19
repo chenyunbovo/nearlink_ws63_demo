@@ -246,3 +246,9 @@ int sta_sample_init(void)
     return 0;
 }
 
+void sta_disconnect(void)
+{
+    if (wifi_sta_disconnect() != 0) {
+        PRINT("%s::wifi_sta_disconnect fail.\r\n", WIFI_STA_SAMPLE_LOG);
+    }
+}

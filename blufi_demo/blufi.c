@@ -7,266 +7,330 @@
  * 2022-07-27, Create file. \n
  */
 
-#include "lwip/netifapi.h"
-#include "wifi_hotspot.h"
-#include "wifi_hotspot_config.h"
-#include "wifi_device.h"
-#include "td_base.h"
-#include "td_type.h"
-#include "stdlib.h"
+#include "osal_addr.h"
+#include "osal_debug.h"
+#include "product.h"
+#include "securec.h"
+#include "errcode.h"
 #include "uart.h"
+#include "bts_def.h"
+#include "bts_gatt_stru.h"
+#include "bts_gatt_server.h"
+#include "bts_le_gap.h"
+#include "stdlib.h"
 #include "cmsis_os2.h"
 #include "app_init.h"
 #include "soc_osal.h"
 #include "reboot_porting.h"
+#include "wifi_device.h"
+#include "blufi_protocol.h"
+#include "blufi_adv.h"
 
-#define WIFI_IFNAME_MAX_SIZE             16
-#define WIFI_MAX_SSID_LEN                33
-#define WIFI_SCAN_AP_LIMIT               64
-#define WIFI_MAC_LEN                     6
-#define WIFI_STA_SAMPLE_LOG              "[WIFI_STA_SAMPLE]"
-#define WIFI_NOT_AVALLIABLE              0
-#define WIFI_AVALIABE                    1
-#define WIFI_GET_IP_MAX_COUNT            300
+#define BLUFI_STA_SAMPLE_LOG              "[BLUFI]"
 
-#define WIFI_TASK_PRIO                  (osPriority_t)(13)
-#define WIFI_TASK_DURATION_MS           2000
-#define WIFI_TASK_STACK_SIZE            0x1000
-#define expected_ssid "123"    /* 待连接的网络名称 */
-#define key "12345678"         /* 待连接的网络接入密码 */
-static td_void wifi_scan_state_changed(td_s32 state, td_s32 size);
-static td_void wifi_connection_changed(td_s32 state, const wifi_linked_info_stru *info, td_s32 reason_code);
+#define BLUFI_TASK_PRIO                  (osPriority_t)(13)
+#define BLUFI_TASK_STACK_SIZE            0x1000
 
-wifi_event_stru wifi_event_cb = {
-    .wifi_event_connection_changed      = wifi_connection_changed,
-    .wifi_event_scan_state_changed      = wifi_scan_state_changed,
-};
 
-enum {
-    WIFI_STA_SAMPLE_INIT = 0,       /* 0:初始态 */
-    WIFI_STA_SAMPLE_SCAN_DONE,      /* 1:扫描完成 */
-    WIFI_STA_SAMPLE_CONNECTING,     /* 2:连接中 */
-    WIFI_STA_SAMPLE_CONNECT_DONE,   /* 3:关联成功 */
-    WIFI_STA_SAMPLE_DISCONNECT,     /* 4:断开连接 */
-    WIFI_STA_SAMPLE_GOT_IP,         /* 5:获取IP */
-} wifi_state_enum;
+/* uart gatt server id */
+#define blufi_SERVER_ID 			1
+/* uart ble connect id */
+#define BLE_SINGLE_LINK_CONNECT_ID 	1
+/* octets of 16 bits uart */
+#define UART16_LEN 					2
+/* invalid attribute handle */
+#define INVALID_ATT_HDL 			0
+/* invalid server ID */
+#define INVALID_SERVER_ID 			0
 
-td_char ifname[WIFI_IFNAME_MAX_SIZE + 1] = "wlan0"; /* 创建的STA接口名 */
-wifi_sta_config_stru expected_bss = {0}; /* 连接请求信息 */
-struct netif *netif_p = TD_NULL;
+#define blufi_SERVICE_NUM 3
 
-static void wifi_state_event_cb(td_s32 event, td_s32 *param);
+static uint16_t g_blufi_conn_id;
+static uint8_t g_blufi_name_value[] = { 'b', 'l', 'e', '_', 'u', 'a', 'r', 't', '\0' };
+static uint8_t g_uart_server_app_uuid[] = { 0x00, 0x00 };
+static uint8_t g_blufi_server_addr[] = { 0x11, 0x22, 0x33, 0x44, 0x55, 0x66 };
+static uint8_t g_server_id = INVALID_SERVER_ID;
+static uint8_t g_connection_state = 0;
+static uint16_t g_notify_indicate_handle = 0;
+static uint8_t g_service_num = 0;
 
-/*****************************************************************************
-  STA 扫描事件回调函数
-*****************************************************************************/
-static td_void wifi_scan_state_changed(td_s32 state, td_s32 size)
+/* 将uint16的uuid数字转化为bt_uuid_t */
+static void bts_data_to_uuid_len2(uint16_t uuid_data, bt_uuid_t *out_uuid)
 {
-    UNUSED(state);
-    PRINT("%s::Scan done!.\r\n", WIFI_STA_SAMPLE_LOG);
-    wifi_state_event_cb(WIFI_STA_SAMPLE_SCAN_DONE, &size);
-    return;
+    out_uuid->uuid_len = UART16_LEN;
+    out_uuid->uuid[0] = (uint8_t)(uuid_data >> 8); /* 8: octet bit num */
+    out_uuid->uuid[1] = (uint8_t)(uuid_data);
 }
 
-/*****************************************************************************
-  STA 关联事件回调函数
-*****************************************************************************/
-static td_void wifi_connection_changed(td_s32 state, const wifi_linked_info_stru *info, td_s32 reason_code)
+/* 设置注册服务时的name */
+void blufi_set_device_name_value(const uint8_t *name, const uint8_t len)
 {
-    UNUSED(info);
-    UNUSED(reason_code);
-
-    if (state == WIFI_NOT_AVALLIABLE) {
-        PRINT("%s::Connect fail!. try agin !\r\n", WIFI_STA_SAMPLE_LOG);
-        wifi_state_event_cb(WIFI_STA_SAMPLE_DISCONNECT, NULL);
-    } else {
-        PRINT("%s::Connect succ!.\r\n", WIFI_STA_SAMPLE_LOG);
-        wifi_state_event_cb(WIFI_STA_SAMPLE_CONNECT_DONE, NULL);
+    size_t len_name = sizeof(g_blufi_name_value);
+    if (memcpy_s(g_blufi_name_value, len_name, name, len) != EOK) {
+        osal_printk("%s memcpy name fail\n", BLUFI_STA_SAMPLE_LOG);
     }
 }
 
-/*****************************************************************************
-  STA 匹配目标AP
-*****************************************************************************/
-td_s32 example_get_match_network(wifi_sta_config_stru *expected_bss, td_u32 num)
+/* 创建服务 */
+static void blufi_add_service(void)
 {
-    td_s32  ret;
-    td_bool find_ap = TD_FALSE;
-    td_u8   bss_index;
-    /* 获取扫描结果 */
-    td_u32 scan_len = sizeof(wifi_scan_info_stru) * WIFI_SCAN_AP_LIMIT;
-    wifi_scan_info_stru *result = osal_kmalloc(scan_len, OSAL_GFP_ATOMIC);
-    if (result == TD_NULL) {
-        return -1;
-    }
-    memset_s(result, scan_len, 0, scan_len);
-    ret = wifi_sta_get_scan_info(result, &num);
-    if (ret != 0) {
-        osal_kfree(result);
-        return -1;
-    }
-    /* 筛选扫描到的Wi-Fi网络，选择待连接的网络 */
-    for (bss_index = 0; bss_index < num; bss_index ++) {
-        if (strlen(expected_ssid) == strlen(result[bss_index].ssid)) {
-            if (memcmp(expected_ssid, result[bss_index].ssid, strlen(expected_ssid)) == 0) {
-                find_ap = TD_TRUE;
-                break;
-            }
-        }
-    }
-    /* 未找到待连接AP,可以继续尝试扫描或者退出 */
-    if (find_ap == TD_FALSE) {
-        osal_kfree(result);
-        return -1;
-    }
-    /* 找到网络后复制网络信息和接入密码 */
-    if (memcpy_s(expected_bss->ssid, WIFI_MAX_SSID_LEN, expected_ssid, strlen(expected_ssid)) != 0) {
-        osal_kfree(result);
-        return -1;
-    }
-    if (memcpy_s(expected_bss->bssid, WIFI_MAC_LEN, result[bss_index].bssid, WIFI_MAC_LEN) != 0) {
-        osal_kfree(result);
-        return -1;
-    }
-    expected_bss->security_type = result[bss_index].security_type;
-    if (memcpy_s(expected_bss->pre_shared_key, WIFI_MAX_SSID_LEN, key, strlen(key)) != 0) {
-        osal_kfree(result);
-        return -1;
-    }
-    expected_bss->ip_type = 1; /* 1：IP类型为动态DHCP获取 */
-    osal_kfree(result);
-    return 0;
+    bt_uuid_t uart_service_uuid = { 0 };
+    bts_data_to_uuid_len2(BLUFI_UUID_SERVER_SERVICE, &uart_service_uuid);
+    gatts_add_service(blufi_SERVER_ID, &uart_service_uuid, true);
 }
 
-/*****************************************************************************
-  STA DHCP状态查询
-*****************************************************************************/
-int example_check_dhcp_status(void *param)
+/* 添加uart发送服务的所有特征和描述符 */
+static void blufi_add_tx_characters_and_descriptors(uint8_t server_id, uint16_t srvc_handle)
 {
-    UNUSED(param);
-    static td_u8 wait_count = 0;
-    while (1) {
-        if ((ip_addr_isany(&(netif_p->ip_addr)) == 0) && (wait_count <= WIFI_GET_IP_MAX_COUNT)) {
-            /* DHCP成功 */
-            PRINT("%s::STA DHCP success.\r\n", WIFI_STA_SAMPLE_LOG);
-            wifi_state_event_cb(WIFI_STA_SAMPLE_GOT_IP, NULL);
-            break;
-        }
-        if (wait_count > WIFI_GET_IP_MAX_COUNT) {
-            PRINT("%s::STA DHCP timeout, try again !.\r\n", WIFI_STA_SAMPLE_LOG);
-            wifi_state_event_cb(WIFI_STA_SAMPLE_DISCONNECT, NULL);
-            return -1;
-        }
-        (void)osDelay(10);
-        wait_count ++;
-    }
-    return 0;
+    osal_printk("%s TX characters:%d srv_handle:%d \n", BLUFI_STA_SAMPLE_LOG, server_id, srvc_handle);
+    bt_uuid_t characters_uuid = { 0 };
+    uint8_t characters_value[] = { 0x12, 0x34 };
+    bts_data_to_uuid_len2(BLUFI_CHARACTERISTIC_UUID_TX, &characters_uuid);
+    gatts_add_chara_info_t character;
+    character.chara_uuid = characters_uuid;
+    character.properties = GATT_CHARACTER_PROPERTY_BIT_NOTIFY | GATT_CHARACTER_PROPERTY_BIT_READ;
+    character.permissions = GATT_ATTRIBUTE_PERMISSION_READ | GATT_ATTRIBUTE_PERMISSION_WRITE;
+    character.value_len = sizeof(characters_value);
+    character.value = characters_value;
+    gatts_add_characteristic(server_id, srvc_handle, &character);
+    osal_printk("%s characters_uuid:%2x %2x\n", BLUFI_STA_SAMPLE_LOG, characters_uuid.uuid[0], characters_uuid.uuid[1]);
+
+    static uint8_t ccc_val[] = { 0x01, 0x00 }; // notify
+    bt_uuid_t ccc_uuid = { 0 };
+    bts_data_to_uuid_len2(BLUFI_CLIENT_CHARACTERISTIC_CONFIGURATION, &ccc_uuid);
+    gatts_add_desc_info_t descriptor;
+    descriptor.desc_uuid = ccc_uuid;
+    descriptor.permissions = GATT_ATTRIBUTE_PERMISSION_READ | GATT_CHARACTER_PROPERTY_BIT_WRITE |
+        GATT_ATTRIBUTE_PERMISSION_WRITE;
+    descriptor.value_len = sizeof(ccc_val);
+    descriptor.value = ccc_val;
+    gatts_add_descriptor(server_id, srvc_handle, &descriptor);
+    osal_printk("%s ccc_uuid:%2x %2x\n", BLUFI_STA_SAMPLE_LOG, characters_uuid.uuid[0], characters_uuid.uuid[1]);
 }
 
-static void wifi_state_event_cb(td_s32 event, td_s32 *param)
+/* 添加uart接收服务的所有特征和描述符 */
+static void blufi_add_rx_characters_and_descriptors(uint8_t server_id, uint16_t srvc_handle)
 {
-    switch (event) {
-    case WIFI_STA_SAMPLE_INIT:
-        wifi_sta_scan();
-        break;
-    case WIFI_STA_SAMPLE_SCAN_DONE:
-        if (example_get_match_network(&expected_bss, param[0]) != 0) {
-            PRINT("%s::Do not find AP, try again !\r\n", WIFI_STA_SAMPLE_LOG);
-            wifi_sta_scan_result_clear();
-            wifi_sta_scan();
-            break;
-        }
-        PRINT("%s::Find AP, try to connect.\r\n", WIFI_STA_SAMPLE_LOG);
-        /* 启动连接 */
-        if (wifi_sta_connect(&expected_bss) != 0) {
-            PRINT("%s::wifi_sta_connect fail!!\r\n", WIFI_STA_SAMPLE_LOG);
-            wifi_state_event_cb(WIFI_STA_SAMPLE_DISCONNECT, NULL);
-        }
-        break;  
-    case WIFI_STA_SAMPLE_CONNECTING:
-        break;
-    case WIFI_STA_SAMPLE_CONNECT_DONE:
-        PRINT("%s::DHCP start.\r\n", WIFI_STA_SAMPLE_LOG);
-        netif_p = netifapi_netif_find(ifname);
-        if (netif_p == TD_NULL || netifapi_dhcp_start(netif_p) != 0) {
-            PRINT("%s::find netif or start DHCP fail, try again !\r\n", WIFI_STA_SAMPLE_LOG);
-            wifi_state_event_cb(WIFI_STA_SAMPLE_DISCONNECT, NULL);
-        }
-        osThreadAttr_t attr;
-        attr.name       = "example_check_dhcp_status";
-        attr.attr_bits  = 0U;
-        attr.cb_mem     = NULL;
-        attr.cb_size    = 0U;
-        attr.stack_mem  = NULL;
-        attr.stack_size = WIFI_TASK_STACK_SIZE;
-        attr.priority   = WIFI_TASK_PRIO;
-        if (osThreadNew((osThreadFunc_t)example_check_dhcp_status, NULL, &attr) == NULL) {
-            PRINT("%s::Create example_check_dhcp_status fail.\r\n", WIFI_STA_SAMPLE_LOG);
-        } else {
-            PRINT("%s::Create example_check_dhcp_status succ.\r\n", WIFI_STA_SAMPLE_LOG);
-        }
-        break;
-    case WIFI_STA_SAMPLE_DISCONNECT:
-        wifi_sta_scan();
-        break;
-    case WIFI_STA_SAMPLE_GOT_IP:
-        PRINT("%s::STA GOT IP success.\r\n", WIFI_STA_SAMPLE_LOG);
-        PRINT("%s::IP ADDR:%s\r\n", WIFI_STA_SAMPLE_LOG, ip4addr_ntoa(netif_ip4_addr(netif_p)));
-        PRINT("%s::NETMASK:%s\r\n", WIFI_STA_SAMPLE_LOG, ip4addr_ntoa(netif_ip4_netmask(netif_p)));
-        PRINT("%s::GATEWAY:%s\r\n", WIFI_STA_SAMPLE_LOG, ip4addr_ntoa(netif_ip4_gw(netif_p)));
-        break;
-    default:
-        PRINT("%s::Invalid event id:%d.\r\n", WIFI_STA_SAMPLE_LOG, event);
-        break;
+    osal_printk("%s RX characters:%d srv_handle: %d \n", BLUFI_STA_SAMPLE_LOG, server_id, srvc_handle);
+    bt_uuid_t characters_uuid = { 0 };
+    uint8_t characters_value[] = { 0x12, 0x34 };
+    bts_data_to_uuid_len2(BLUFI_CHARACTERISTIC_UUID_RX, &characters_uuid);
+    gatts_add_chara_info_t character;
+    character.chara_uuid = characters_uuid;
+    character.properties = GATT_CHARACTER_PROPERTY_BIT_WRITE;
+    character.permissions = GATT_ATTRIBUTE_PERMISSION_READ | GATT_ATTRIBUTE_PERMISSION_WRITE;
+    character.value_len = sizeof(characters_value);
+    character.value = characters_value;
+    gatts_add_characteristic(server_id, srvc_handle, &character);
+    osal_printk("%s characters_uuid:%2x %2x\n", BLUFI_STA_SAMPLE_LOG, characters_uuid.uuid[0], characters_uuid.uuid[1]);
+}
+
+bool bts_uart_compare_uuid(bt_uuid_t *uuid1, bt_uuid_t *uuid2)
+{
+    if (uuid1->uuid_len != uuid2->uuid_len) {
+        return false;
+    }
+    if (memcmp(uuid1->uuid, uuid2->uuid, uuid1->uuid_len) != 0) {
+        return false;
+    }
+    return true;
+}
+
+/* 服务添加回调 */
+static void blufi_server_service_add_cbk(uint8_t server_id, bt_uuid_t *uuid, uint16_t handle, errcode_t status)
+{
+    osal_printk("%s add characters_and_descriptors cbk service:%d, srv_handle:%d, uuid_len:%d, status:%d, uuid:",
+                BLUFI_STA_SAMPLE_LOG, server_id, handle, uuid->uuid_len, status);
+    for (int8_t i = 0; i < uuid->uuid_len; i++) {
+        osal_printk("%02x ", uuid->uuid[i]);
+    }
+    osal_printk("\n");
+    blufi_add_tx_characters_and_descriptors(server_id, handle);
+    blufi_add_rx_characters_and_descriptors(server_id, handle);
+
+    gatts_start_service(server_id, handle);
+}
+
+/* 特征添加回调 */
+static void blufi_server_characteristic_add_cbk(uint8_t server_id, bt_uuid_t *uuid, uint16_t service_handle,
+                                                   gatts_add_character_result_t *result, errcode_t status)
+{
+    osal_printk("%s add character cbk service:%d service_hdl: %d char_hdl: %d char_val_hdl: %d uuid_len: %d \n",
+                BLUFI_STA_SAMPLE_LOG, server_id, service_handle, result->handle, result->value_handle, uuid->uuid_len);
+    osal_printk("uuid:");
+    for (int8_t i = 0; i < uuid->uuid_len; i++) {
+        osal_printk("%02x ", uuid->uuid[i]);
+    }
+    bt_uuid_t characters_cbk_uuid = { 0 };
+    bts_data_to_uuid_len2(BLUFI_CHARACTERISTIC_UUID_TX, &characters_cbk_uuid);
+    characters_cbk_uuid.uuid_len = uuid->uuid_len;
+    if (bts_uart_compare_uuid(uuid, &characters_cbk_uuid)) {
+        g_notify_indicate_handle = result->value_handle;
+    }
+    osal_printk("%s status:%d indicate_handle:%d\n", BLUFI_STA_SAMPLE_LOG, status, g_notify_indicate_handle);
+}
+
+/* 描述符添加回调 */
+static void blufi_server_descriptor_add_cbk(uint8_t server_id, bt_uuid_t *uuid, uint16_t service_handle,
+                                               uint16_t handle, errcode_t status)
+{
+    osal_printk("%s service:%d service_hdl: %d desc_hdl: %d uuid_len: %d \n",
+                BLUFI_STA_SAMPLE_LOG, server_id, service_handle, handle, uuid->uuid_len);
+    osal_printk("uuid:");
+    for (int8_t i = 0; i < uuid->uuid_len; i++) {
+        osal_printk("%02x ", (uint8_t)uuid->uuid[i]);
+    }
+    osal_printk("%s status:%d\n", BLUFI_STA_SAMPLE_LOG, status);
+}
+
+/* 开始服务回调 */
+static void blufi_server_service_start_cbk(uint8_t server_id, uint16_t handle, errcode_t status)
+{
+    g_service_num++;
+    if ((g_service_num == blufi_SERVICE_NUM) && (status == 0)) {
+        osal_printk("%s start service cbk , start adv\n", BLUFI_STA_SAMPLE_LOG);
+        blufi_set_adv_data();
+        blufi_start_adv();
+    }
+    osal_printk("%s start service:%2d service_hdl: %d status: %d\n",
+                BLUFI_STA_SAMPLE_LOG, server_id, handle, status);
+}
+
+static void blufi_receive_write_req_cbk(uint8_t server_id, uint16_t conn_id, gatts_req_write_cb_t *write_cb_para,
+                                           errcode_t status)
+{
+    osal_printk("%s blufi write cbk server_id:%d, conn_id:%d, status%d\n",
+        BLUFI_STA_SAMPLE_LOG, server_id, conn_id, status);
+    osal_printk("%s blufi write cbk len:%d, data:%s\n",
+                BLUFI_STA_SAMPLE_LOG, write_cb_para->length, write_cb_para->value);
+    if ((write_cb_para->length > 0) && write_cb_para->value) {
+
     }
 }
 
-int sta_sample_init(void *param)
+static void blufi_receive_read_req_cbk(uint8_t server_id, uint16_t conn_id, gatts_req_read_cb_t *read_cb_para,
+    errcode_t status)
+{
+    osal_printk("%s ReceiveReadReq--server_id:%d conn_id:%d\n", BLUFI_STA_SAMPLE_LOG, server_id, conn_id);
+    osal_printk("%s request_id:%d, att_handle:%d offset:%d, need_rsp:%d, is_long:%d\n",
+                BLUFI_STA_SAMPLE_LOG, read_cb_para->request_id, read_cb_para->handle, read_cb_para->offset,
+                read_cb_para->need_rsp, read_cb_para->is_long);
+    osal_printk("%s status:%d\n", BLUFI_STA_SAMPLE_LOG, status);
+}
+
+static void blufi_mtu_changed_cbk(uint8_t server_id, uint16_t conn_id, uint16_t mtu_size, errcode_t status)
+{
+    osal_printk("%s MtuChanged--server_id:%d conn_id:%d\n", BLUFI_STA_SAMPLE_LOG, server_id, conn_id);
+    osal_printk("%s mtusize:%d, status:%d\n", BLUFI_STA_SAMPLE_LOG, mtu_size, status);
+}
+
+static void blufi_server_adv_enable_cbk(uint8_t adv_id, adv_status_t status)
+{
+    osal_printk("%s adv enable cbk adv_id:%d status:%d\n", BLUFI_STA_SAMPLE_LOG, adv_id, status);
+}
+
+static void blufi_server_adv_disable_cbk(uint8_t adv_id, adv_status_t status)
+{
+    osal_printk("%s adv disable adv_id: %d, status:%d\n", BLUFI_STA_SAMPLE_LOG, adv_id, status);
+}
+
+void blufi_server_connect_change_cbk(uint16_t conn_id, bd_addr_t *addr, gap_ble_conn_state_t conn_state,
+                                        gap_ble_pair_state_t pair_state, gap_ble_disc_reason_t disc_reason)
+{
+    g_blufi_conn_id = conn_id;
+    g_connection_state = (uint8_t)conn_state;
+    osal_printk("%s connect state change conn_id: %d, status: %d, pair_status:%d, addr %x disc_reason %x\n",
+                BLUFI_STA_SAMPLE_LOG, conn_id, conn_state, pair_state, addr[0], disc_reason);
+    if (conn_state == GAP_BLE_STATE_CONNECTED) {
+        return;
+    } else if (conn_state == GAP_BLE_STATE_DISCONNECTED) {
+        blufi_set_adv_data();
+        blufi_start_adv();
+    }
+}
+void blufi_server_pair_result_cb(uint16_t conn_id, const bd_addr_t *addr, errcode_t status)
+{
+    osal_printk("%s pair result conn_id: %d, status: %d, addr %x \n",
+                BLUFI_STA_SAMPLE_LOG, conn_id, status, addr[0]);
+}
+
+static errcode_t blufi_server_register_callbacks(void)
+{
+    gap_ble_callbacks_t gap_cb = { 0 };
+    gatts_callbacks_t service_cb = { 0 };
+
+    gap_cb.start_adv_cb = blufi_server_adv_enable_cbk;
+    gap_cb.conn_state_change_cb = blufi_server_connect_change_cbk;
+    gap_cb.stop_adv_cb = blufi_server_adv_disable_cbk;
+    gap_cb.pair_result_cb = blufi_server_pair_result_cb;
+    errcode_t ret = gap_ble_register_callbacks(&gap_cb);
+
+    service_cb.add_service_cb = blufi_server_service_add_cbk;
+    service_cb.add_characteristic_cb = blufi_server_characteristic_add_cbk;
+    service_cb.add_descriptor_cb = blufi_server_descriptor_add_cbk;
+    service_cb.start_service_cb = blufi_server_service_start_cbk;
+    service_cb.read_request_cb = blufi_receive_read_req_cbk;
+    service_cb.write_request_cb = blufi_receive_write_req_cbk;
+    service_cb.mtu_changed_cb = blufi_mtu_changed_cbk;
+    ret = gatts_register_callbacks(&service_cb);
+    if (ret != ERRCODE_BT_SUCCESS) {
+        osal_printk("%s reg service cbk failed ret = %d\n", BLUFI_STA_SAMPLE_LOG, ret);
+        return ret;
+    }
+    enable_ble();
+    return ret;
+}
+
+int blufi_init(void *param)
 {
     param = param;
+     (void)osal_msleep(5000); /* 延时5s，等待SLE初始化完毕 */
 
-    /* 注册事件回调 */
-    if (wifi_register_event_cb(&wifi_event_cb) != 0) {
-        PRINT("%s::wifi_event_cb register fail.\r\n", WIFI_STA_SAMPLE_LOG);
-        return -1;
-    }
-    PRINT("%s::wifi_event_cb register succ.\r\n", WIFI_STA_SAMPLE_LOG);
-    /* 等待wifi初始化完成 */
-    while (wifi_is_wifi_inited() == 0) {
-        (void)osDelay(10); /* 1: 等待100ms后判断状态 */
-    }
-    PRINT("%s::wifi init succ.\r\n", WIFI_STA_SAMPLE_LOG);
+    blufi_server_register_callbacks();
+    enable_ble();
 
-    if (wifi_sta_enable() != 0) {
-        PRINT("%s::wifi_sta_enable fail.\r\n", WIFI_STA_SAMPLE_LOG);
+    errcode_t ret = 0;
+    bt_uuid_t app_uuid = { 0 };
+    bd_addr_t ble_addr = { 0 };
+    app_uuid.uuid_len = sizeof(g_uart_server_app_uuid);
+    if (memcpy_s(app_uuid.uuid, app_uuid.uuid_len, g_uart_server_app_uuid, sizeof(g_uart_server_app_uuid)) != EOK) {
+        osal_printk("%s add server app uuid memcpy failed\n", BLUFI_STA_SAMPLE_LOG);
         return -1;
     }
-    if (wifi_sta_set_reconnect_policy(0, 2, 1, 1) != ERRCODE_SUCC) {
-        PRINT("%s::wifi_sta_set_reconnect_policy fail.\r\n", WIFI_STA_SAMPLE_LOG);
+    ble_addr.type = BLE_PUBLIC_DEVICE_ADDRESS;
+    wifi_get_base_mac_addr((int8_t *)g_blufi_server_addr,6);
+    if (memcpy_s(ble_addr.addr, BD_ADDR_LEN, g_blufi_server_addr, sizeof(g_blufi_server_addr)) != EOK) {
+        osal_printk("%s add server app addr memcpy failed\n", BLUFI_STA_SAMPLE_LOG);
         return -1;
     }
-    osDelay(1000);
-    reboot_port_reboot_chip();
-    wifi_state_event_cb(WIFI_STA_SAMPLE_INIT, NULL);
+    gap_ble_set_local_name(g_blufi_name_value, sizeof(g_blufi_name_value));
+    gap_ble_set_local_addr(&ble_addr);
+    ret = gatts_register_server(&app_uuid, &g_server_id);
+    if ((ret != ERRCODE_BT_SUCCESS) || (g_server_id == INVALID_SERVER_ID)) {
+        osal_printk("%s add server failed\r\n", BLUFI_STA_SAMPLE_LOG);
+        return -1;
+    }
+    blufi_add_service(); /* 添加uart服务 */
+    osal_printk("%s beginning add service\r\n", BLUFI_STA_SAMPLE_LOG);
+    bth_ota_init();
     return 0;
 }
 
-static void sta_sample_entry(void)
+static void blufi(void)
 {
     osThreadAttr_t attr;
-    attr.name       = "sta_sample_task";
+    attr.name       = "blufi_task";
     attr.attr_bits  = 0U;
     attr.cb_mem     = NULL;
     attr.cb_size    = 0U;
     attr.stack_mem  = NULL;
-    attr.stack_size = WIFI_TASK_STACK_SIZE;
-    attr.priority   = WIFI_TASK_PRIO;
-    if (osThreadNew((osThreadFunc_t)sta_sample_init, NULL, &attr) == NULL) {
-        PRINT("%s::Create sta_sample_task fail.\r\n", WIFI_STA_SAMPLE_LOG);
+    attr.stack_size = BLUFI_TASK_STACK_SIZE;
+    attr.priority   = BLUFI_TASK_PRIO;
+    if (osThreadNew((osThreadFunc_t)blufi_init, NULL, &attr) == NULL) {
+        osal_printk("%s::Create blufi_task fail.\r\n", BLUFI_STA_SAMPLE_LOG);
     } else {
-        PRINT("%s::Create sta_sample_task succ.\r\n", WIFI_STA_SAMPLE_LOG);
+        osal_printk("%s::Create blufi_task succ.\r\n", BLUFI_STA_SAMPLE_LOG);
     }
 }
 
-/* Run the sta_sample_task. */
-app_run(sta_sample_entry);
+app_run(blufi);
