@@ -15,6 +15,7 @@ void btc_blufi_send_encap(uint8_t type, uint8_t *data, int total_data_len);
 
 uint16_t blufi_crc_checksum(uint8_t iv8, uint8_t *data, int len)
 {
+    unused(iv8);
     return uapi_crc16(0, data, len);
 }
 
@@ -131,9 +132,9 @@ static void btc_blufi_send_ack(uint8_t seq)
 
 void btc_blufi_recv_handler(uint8_t *data, int len)
 {
+    unused(len);
     struct blufi_hdr *hdr = (struct blufi_hdr *)data;
     uint16_t checksum, checksum_pkt;
-    int ret;
 
     if (hdr->seq != blufi_env.recv_seq) {
         btc_blufi_report_error(ESP_BLUFI_SEQUENCE_ERROR);
