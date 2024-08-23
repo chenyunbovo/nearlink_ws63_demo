@@ -152,12 +152,6 @@ void btc_blufi_cb_deep_free(btc_msg_t *msg)
     }
 }
 
-void btc_blufi_report_error(uint8_t state)
-{
-    uint8_t hdr[5] = {0x49,0x04,blufi_env.send_seq++,0x01,state};
-    ble_uart_server_send_input_report(hdr,5);
-}
-
 int btc_transfer_context(btc_msg_t *msg, void *arg, int arg_len, btc_arg_deep_copy_t copy_func,
                                     btc_arg_deep_free_t free_func)
 {
