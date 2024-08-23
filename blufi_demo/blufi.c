@@ -31,7 +31,7 @@
 #define BLUFI_TASK_PRIO                  (osPriority_t)(13)
 #define BLUFI_TASK_STACK_SIZE            0x1000
 
-
+extern tBLUFI_ENV blufi_env;
 /* uart gatt server id */
 #define BLUFI_SERVER_ID 			1
 /* uart ble connect id */
@@ -62,11 +62,15 @@ errcode_t ble_uart_server_send_input_report(uint8_t *data, uint16_t len)
         return ERRCODE_BT_FAIL;
     }
     gatts_ntf_ind_t param = { 0 };
-    uint16_t conn_id = g_blufi_conn_id;
     param.attr_handle = g_notify_indicate_handle;
     param.value_len = len;
     param.value = data;
-    gatts_notify_indicate(BLUFI_SERVER_ID, conn_id, &param);
+    printf("send data:");
+    for (int i = 0; i < len; i++) {
+        printf("%02x ", data[i]);
+    }
+    printf("\n");
+    gatts_notify_indicate(BLUFI_SERVER_ID, g_blufi_conn_id, &param);
     return ERRCODE_BT_SUCCESS;
 }
 
@@ -227,11 +231,12 @@ static void blufi_receive_write_req_cbk(uint8_t server_id, uint16_t conn_id, gat
             }
             break;
         case WRITE_HANDLE:
-            printf("recv data:");
+            printf("receive data:");
             for (int i = 0; i < write_cb_para->length; i++) {
-                printf("%02X ", write_cb_para->value[i]);
+                printf("%02x ", write_cb_para->value[i]);
             }
             printf("\n");
+            btc_blufi_recv_handler(write_cb_para->value, write_cb_para->length);
             break;
         default:
             break;
@@ -273,8 +278,10 @@ void blufi_server_connect_change_cbk(uint16_t conn_id, bd_addr_t *addr, gap_ble_
     osal_printk("%s connect state change conn_id: %d, status: %d, pair_status:%d, addr %x disc_reason %x\n",
                 BLUFI_STA_SAMPLE_LOG, conn_id, conn_state, pair_state, addr[0], disc_reason);
     if (conn_state == GAP_BLE_STATE_CONNECTED) {
+        blufi_env.is_connected = true;
         return;
     } else if (conn_state == GAP_BLE_STATE_DISCONNECTED) {
+        blufi_env.is_connected = false;
         blufi_set_adv_data();
         blufi_start_adv();
     }
@@ -319,7 +326,8 @@ int blufi_init(void *param)
 
     blufi_server_register_callbacks();
     enable_ble();
-
+    memset(&blufi_env, 0x0, sizeof(blufi_env));
+    blufi_env.frag_size = BLUFI_FRAG_DATA_DEFAULT_LEN;
     errcode_t ret = 0;
     bt_uuid_t app_uuid = { 0 };
     bd_addr_t ble_addr = { 0 };
