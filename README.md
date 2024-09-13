@@ -8,6 +8,7 @@
 | http_client_demo | 通过WIFI连接上路由器，通过HTTP GET百度网页数据 |
 | fix_sta_sample | 将原来的轮询代码修改为事件通知形式以实现重复多次连接 |
 | blufi_demo | 移植乐鑫BLUFI项目代码，通过EspBlufi APP配网（未完成） |
+| sntp_client_demo | 通过WIFI连接上路由器，通过LWIP的SNTP协议获取时间数据 |
 ## Quick Start
 ### 1、上层Kconfig文件添加如下代码
 ```

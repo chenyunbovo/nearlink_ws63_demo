@@ -20,3 +20,6 @@ config SAMPLE_SUPPORT_FIX_STA_SAMPLE
 
 config SAMPLE_SUPPORT_BLUFI_SAMPLE
     bool "Support blufi Sample."
+
+config SAMPLE_SUPPORT_SNTP_CLIENT_SAMPLE
+    bool "Support sntp client Sample."
